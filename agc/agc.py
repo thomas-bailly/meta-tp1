@@ -70,12 +70,55 @@ def get_arguments():
     return parser.parse_args()
 
 def read_fasta(amplicon_file, minseqlen):
-    pass
+    with gzip.open(amplicon_file, "rt") as file:
+        
+        sequence = ""
+        for line in file:
+            if line[0] == ">":
+                if (len(sequence) >= minseqlen):
+                    yield(sequence)
+                line = next(file, None)
+                sequence = str(line.strip())
+            else:
+                sequence += str(line.strip())
+        if len(sequence) >= minseqlen:
+            yield(sequence)
+                
 
 
 def dereplication_fulllength(amplicon_file, minseqlen, mincount):
-    pass
+    list_read = [read for read in read_fasta(amplicon_file, minseqlen)]
+    set_read = list(set(list_read))
+    count_read = []
+    for i in range(0, len(set_read), 1):
+        if list_read.count(set_read[i]) >= mincount:
+            count_read.append([set_read[i], list_read.count(set_read[i])])
+    count_read.sort(key= lambda x: x[1], reverse=True)
+    for i in range(0, len(count_read), 1):
+        yield(count_read[i])
 
+
+def get_unique_kmer(kmer_dict, sequence, id_seq, kmer_size):
+    for kmer in cut_kmer(sequence, kmer_size):
+        if kmer in kmer_dict:
+            kmer_dict[kmer].append(id_seq)
+        else:
+            kmer_dict[kmer] = [id_seq] 
+    return(kmer_dict)
+
+
+def search_mates(kmer_dict, sequence, kmer_size):
+    parent_list = []
+    for kmer in cut_kmer(sequence, kmer_size):
+        if kmer in kmer_dict:
+            if len(parent_list) == 0: 
+                parent_list = kmer_dict[kmer]
+            else:
+                parent_list = parent_list + kmer_dict[kmer]
+    commun = Counter(parent_list).most_common(2)
+    parents_id = [commun[0][0],commun[1][0]]
+    return(parents_id)
+	    
 
 def get_unique(ids):
     return {}.fromkeys(ids).keys()
@@ -110,18 +153,128 @@ def get_identity(alignment_list):
             id_nu += 1
     return round(100.0 * id_nu / len(alignment_list[0]), 2)
 
+
+def std(data):
+    st_dev = statistics.pstdev(data)
+    return(st_dev)
+
+
+def detect_chimera(perc_identity_matrix):
+    seq_similar = []
+    list_std =[std(elem) for elem in perc_identity_matrix]
+    mean_std = statistics.mean(list_std)
+    for i in range(0, len(perc_identity_matrix), 1):
+        if perc_identity_matrix[i][0] > perc_identity_matrix[i][1]:
+            seq_similar.append(0)
+        else:
+            seq_similar.append(1)
+    if mean_std > 5:
+        if seq_similar.count(0) >= 1 and seq_similar.count(1) >= 1:
+            return(True)
+        else:
+            return(False)
+    else:
+	    return(False)
+
+
 def chimera_removal(amplicon_file, minseqlen, mincount, chunk_size, kmer_size):
-    pass
+    kmer_dict ={}
+    sequences = (dereplication_fulllength(amplicon_file, minseqlen, mincount))
+    # Par défaut les 2 première seq sont définies comme non chimérique
+    no_chim_list = []
+    match = os.path.abspath(os.path.join(os.path.dirname(__file__),"MATCH"))
+
+    no_chim_list.append(next(sequences, None))
+    no_chim_list.append(next(sequences, None))
+    
+    kmer_dict = get_unique_kmer(kmer_dict, no_chim_list[0], 0, kmer_size)
+    kmer_dict = get_unique_kmer(kmer_dict, no_chim_list[1], 1, kmer_size)
+    
+    sequences = list(sequences)
+    
+    for i in range(2, len(sequences), 1):
+        parents = search_mates(kmer_dict, sequences[i][0], kmer_size)  # Recherche de parents
+        # Si moins de 2 parents => séquence considérée comme non-chimérique
+        if len(parents) < 2:
+            no_chim_list.append(sequences[i])
+            for chunk in get_chunks(sequences[i][0], chunk_size):
+                kmer_dict = get_unique_kmer(kmer_dict, chunk, i, kmer_size)
+        else:
+            chunks = get_chunks(sequences[i][0], chunk_size)		# Découpe séquence en segments
+            par_1 = get_chunks(sequences[parents[0]][0], chunk_size)	#
+            par_2 = get_chunks(sequences[parents[1]][0], chunk_size)	# Découpe des parents
+
+            perc_identity_matrix = []		# Création d'une matrice d'identité de forme
+                        # 1ere ligne : [segment 1 séquence 1, segment 1 séquence 2]
+                            # et ainsi de suite
+            for j in range(0, len(chunks), 1):
+                ident_1 = nw.global_align(chunks[j], par_1[j], gap_open=-1,
+                                                gap_extend=-1, matrix= match)
+                ident_2 = nw.global_align(chunks[j], par_2[j], gap_open=-1,
+                                                gap_extend=-1, matrix= match)
+                perc_identity_matrix.append([get_identity(ident_1), get_identity(ident_2)])
+        # Détecte si la séquence est une chimère ou non 
+            if detect_chimera(perc_identity_matrix) == True: # Si oui
+                pass
+            else:					     # Si non
+                no_chim_list.append(sequences[i])
+                for chunk in get_chunks(sequences[i][0], chunk_size):
+                        kmer_dict = get_unique_kmer(kmer_dict, chunk, i, kmer_size)
+    
+        '''for k in range(0, len(no_chim_list), 1):	# Générateur sans séquences chimériques
+            yield(no_chim_list[k])'''
+            
+    for elem in no_chim_list:
+        yield(elem)
+	    
 
 def abundance_greedy_clustering(amplicon_file, minseqlen, mincount, chunk_size, kmer_size):
-    pass
+    
+    '''match = os.path.abspath(os.path.join(os.path.dirname(__file__),"MATCH"))
+    seq_len = list(dereplication_fulllength(amplicon_file, minseqlen, mincount))
+    OTU_list = [seq_len[0]]
+    for i in range(1, len(seq_len), 1):
+        sequence1 = seq_len[i][0]
+        j = i + 1
+        while j != len(OTU_list)-1:
+            sequence2 = OTU_list[j][0]
+            alignment_list = nw.global_align(sequence1, sequence2, gap_open=-1,
+                                             gap_extend=-1, matrix= match)
+            if get_identity(alignment_list) < 97.0:
+                OTU_list.append(seq_len[i])
+                j = len(OTU_list)-1
+            else:
+                j += 1
+    return(OTU_list)
+    '''
+    
+    match = os.path.abspath(os.path.join(os.path.dirname(__file__),"MATCH"))
+    seq_len = list(dereplication_fulllength(amplicon_file, minseqlen, mincount))
+    OTU_list = [seq_len[0]]
+    #OTU_list.append(next(seq_len,None))
+    
+    for elem in seq_len:
+        for otu in OTU_list:
+            alignment_list = nw.global_align(otu[0], elem[0], gap_open=-1,
+                                             gap_extend=-1, matrix= match)
+            
+            if get_identity(alignment_list) < 97:
+                OTU_list.append(elem)
+    return(OTU_list)
 
 def fill(text, width=80):
     """Split text with a line return to respect fasta format"""
     return os.linesep.join(text[i:i+width] for i in range(0, len(text), width))
 
 def write_OTU(OTU_list, output_file):
-    pass
+    
+    # Pour François : avec output_file,"a" ça passait po le test,
+    # avec output_file,"wt" ça passe le test.
+    
+    with open(output_file, "wt") as save:
+        for i in range(0, len(OTU_list), 1):
+            n = i+1
+            save.write(">OTU_{} occurrence:{}\n{}\n".format(n, OTU_list[i][1], fill(OTU_list[i][0])))
 
 #==============================================================
 # Main program
