@@ -148,7 +148,8 @@ def get_unique_kmer(kmer_dict, sequence, id_seq, kmer_size):
     '''
     for kmer in cut_kmer(sequence, kmer_size):
         if kmer in kmer_dict:
-            kmer_dict[kmer].append(id_seq)
+	    if id_seq not in kmer_dict[kmer]:
+                kmer_dict[kmer].append(id_seq)
         else:
             kmer_dict[kmer] = [id_seq] 
     return(kmer_dict)
@@ -333,9 +334,7 @@ def fill(text, width=80):
     return os.linesep.join(text[i:i+width] for i in range(0, len(text), width))
 
 def write_OTU(OTU_list, output_file):
-    
-    # Pour François : avec output_file,"a" ça passait po le test,
-    # avec output_file,"wt" ça passe le test.
+    """Write the list of OTU with their occurence in a fasta file"""
     
     with open(output_file, "wt") as save:
         for i in range(0, len(OTU_list), 1):
